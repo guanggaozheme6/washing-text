@@ -1,0 +1,39 @@
+# 文本结构改写降重系统 · 配置
+parser:
+  tasks: [tok, pos, dep, srl, ner]
+  # 追求精度可换 OPEN_TOK_POS_NER_SRL_DEP_SDP_CON_ELECTRA_BASE_ZH
+  model: OPEN_TOK_POS_NER_SRL_DEP_SDP_CON_ELECTRA_SMALL_ZH
+
+rewrite:
+  rounds: 2                # 迭代上限 3, 默认 2 (第三轮起语义漂移风险高)
+  candidates_per_sentence: 8
+  max_ops_per_candidate: 3
+  ops_enabled: [split, shift, attrib, connector, voice, merge]
+  ops_disabled: [synonym]  # 同义替换默认关, 风险收益比最差
+  seed: 42
+
+scorer:
+  weights: {novelty: 0.45, fidelity: 0.30, fluency: 0.25}
+  min_fidelity: 0.65       # 低于此分直接丢弃 (包含率口径, 0.65≈原意基本无损)
+  length_ratio: [0.6, 1.8]
+
+overlap:
+  max_run_threshold: 10    # 最长连续重合 (忽略标点) 超过此值视为未达标
+  corpus_dir: data/corpus
+
+protect:
+  whitelist: data/whitelist.txt
+  keep_quotes: true        # 引号内一律不动
+  keep_numbers: true
+  keep_ner: true
+
+generative:                # 可选兜底, 默认关闭
+  enabled: false
+  backend: simbert         # simbert | llm | backtranslate
+
+llm:                       # DeepSeek 整句重写算子
+  enabled: true            # 默认开启: 无 key 时自动熔断降级, 不影响纯规则流程
+  model: deepseek-chat
+  timeout: 30
+  max_fail_streak: 3       # 连续失败次数达到后本进程内熔断
+

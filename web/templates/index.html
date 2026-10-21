@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文本改写降重工作台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M16 4c-5.5 0-9 4.2-9 9.4 0 4.9 3.6 10.6 9 14.6 5.4-4 9-9.7 9-14.6C25 8.2 21.5 4 16 4z"
+              fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M11.5 13.5c1.6 1.1 7.4 1.1 9 0M16 10v8" fill="none" stroke="currentColor"
+              stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <div class="brand-text">
+        <h1>文本改写降重工作台</h1>
+        <p>句法结构变换 &middot; 保义校验 &middot; 迭代选优</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="status-pill" id="modelStatus" data-state="loading">
+        <span class="dot"></span><span id="modelStatusText">连接中…</span>
+      </span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- 左栏: 输入 + 参数 -->
+    <section class="panel input-panel" aria-label="原稿输入">
+      <div class="panel-head">
+        <h2>原稿</h2>
+        <div class="panel-tools">
+          <span class="char-count" id="charCount">0 字</span>
+          <button class="btn btn-ghost btn-sm" id="btnLoadDemo" type="button">载入示例</button>
+          <button class="btn btn-ghost btn-sm" id="btnClear" type="button">清空</button>
+        </div>
+      </div>
+      <div class="drop-zone" id="dropZone">
+        <textarea id="sourceText" class="source-text" spellcheck="false"
+          placeholder="把要改写的文稿粘贴到这里，或将 .txt / .docx 文件拖入…"></textarea>
+      </div>
+
+      <details class="params" id="paramsBox">
+        <summary>
+          <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M4 8h8M6 12h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+          参数设置
+          <span class="params-hint" id="paramsHint"></span>
+        </summary>
+        <div class="params-grid">
+          <div class="field">
+            <label for="optRounds">迭代轮数 <em>1–3</em></label>
+            <input type="range" id="optRounds" min="1" max="3" step="1" value="2">
+            <output id="optRoundsOut">2 轮</output>
+          </div>
+          <div class="field">
+            <label for="optSeed">随机种子</label>
+            <input type="number" id="optSeed" value="42" step="1">
+          </div>
+          <div class="field">
+            <label for="optMaxRun">重合阈值 <em>连续字符</em></label>
+            <input type="number" id="optMaxRun" value="10" min="3" max="100" step="1">
+          </div>
+          <div class="field">
+            <label for="optCorpus">比对语料目录</label>
+            <input type="text" id="optCorpus" value="data/corpus" spellcheck="false">
+          </div>
+          <div class="field field-wide">
+            <label>启用算子</label>
+            <div class="ops-grid" id="opsGrid"></div>
+          </div>
+          <div class="field field-wide">
+            <label for="optWhitelist">术语白名单文件</label>
+            <input type="text" id="optWhitelist" value="data/whitelist.txt" spellcheck="false">
+          </div>
+        </div>
+      </details>
+
+      <div class="actions">
+        <button class="btn btn-secondary" id="btnEvaluate" type="button">
+          <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13V3m0 10h12M5 10V7m3 3V4m3 6V9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+          先评估
+        </button>
+        <button class="btn btn-primary" id="btnRewrite" type="button">
+          <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v3M8 11v3M2 8h3M11 8h3M4 4l2 2M10 10l2 2M12 4l-2 2M6 10l-2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          开始改写
+        </button>
+      </div>
+    </section>
+
+    <!-- 右栏: 结果 -->
+    <section class="panel result-panel" aria-label="结果" id="resultPanel">
+      <!-- 空状态 -->
+      <div class="state-block state-empty" id="stateEmpty">
+        <svg class="empty-art" viewBox="0 0 120 90" aria-hidden="true">
+          <path d="M60 12c-14 0-23 10.5-23 23.5C37 48 46 62 60 72c14-10 23-24 23-36.5C83 22.5 74 12 60 12z"
+                fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" opacity=".55"/>
+          <path d="M46 36c4.5 3 23.5 3 28 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity=".45"/>
+          <path d="M38 76h44M46 82h28" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" opacity=".18"/>
+        </svg>
+        <h3>等待一篇原稿</h3>
+        <p>粘贴文稿后先「评估」看危险指数，或直接「开始改写」。<br>改写产出是毛坯，请务必人工通读一遍。</p>
+      </div>
+
+      <!-- 加载状态 -->
+      <div class="state-block state-loading hidden" id="stateLoading">
+        <div class="loader-art" aria-hidden="true">
+          <span class="wave"></span><span class="wave"></span><span class="wave"></span>
+        </div>
+        <h3 id="loadingTitle">正在改写…</h3>
+        <p class="loading-stage" id="loadingStage">分句与句法分析…</p>
+        <p class="loading-note">首次运行需加载 HanLP 模型，约 20 秒；长文稿请耐心等待</p>
+        <div class="skeleton">
+          <div class="sk-line sk-w80"></div>
+          <div class="sk-line sk-w60"></div>
+          <div class="sk-line sk-w90"></div>
+        </div>
+      </div>
+
+      <!-- 评估结果 -->
+      <div class="state-block state-result hidden" id="stateReport">
+        <div class="result-head">
+          <h2 id="reportTitle">危险指数评估</h2>
+          <button class="btn btn-ghost btn-sm" id="btnBackToEdit" type="button">收起</button>
+        </div>
+        <div class="metrics" id="reportMetrics"></div>
+        <div class="section-title">最危险 TOP5</div>
+        <ol class="danger-list" id="dangerList"></ol>
+      </div>
+
+      <!-- 改写结果 -->
+      <div class="state-block state-result hidden" id="stateRewrite">
+        <div class="result-head">
+          <h2>改写完成</h2>
+          <div class="result-head-tools">
+            <span class="rounds-badge" id="roundsBadge"></span>
+            <button class="btn btn-ghost btn-sm" id="btnNewRun" type="button">再改一版</button>
+          </div>
+        </div>
+
+        <div class="metrics" id="rewriteMetrics"></div>
+
+        <div class="section-title">
+          改写稿
+          <span class="section-tools">
+            <button class="btn btn-ghost btn-sm" id="btnCopyText" type="button">
+              <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3.5A1.5 1.5 0 014.5 2H11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              复制
+            </button>
+            <button class="btn btn-ghost btn-sm" id="btnDownloadTxt" type="button">
+              <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 13h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+              .txt
+            </button>
+            <button class="btn btn-ghost btn-sm" id="btnDownloadJson" type="button">
+              <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 13h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+              .json
+            </button>
+            <button class="btn btn-ghost btn-sm" id="btnDownloadMd" type="button">
+              <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 13h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+              report.md
+            </button>
+          </span>
+        </div>
+        <pre class="final-text" id="finalText"></pre>
+
+        <div class="section-title">
+          逐句对照
+          <span class="section-tools legend">
+            <span class="legend-item"><i class="sw sw-del"></i>原文独有</span>
+            <span class="legend-item"><i class="sw sw-add"></i>改写新增</span>
+          </span>
+        </div>
+        <div class="sentence-list" id="sentenceList"></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
