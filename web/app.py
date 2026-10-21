@@ -17,6 +17,8 @@ from flask import Flask, jsonify, render_template, request, g
 # 允许直接以脚本运行 (python web/app.py) 时找到项目包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from rewriter import settings as user_settings  # noqa: E402
+from rewriter.operators.llm import LLMProbeError, probe  # noqa: E402
 from web.service import KNOWN_OPS, RewriteService, ServiceError  # noqa: E402
 
 HOST = os.environ.get('WASHING_HOST', '127.0.0.1')
@@ -231,6 +233,83 @@ def parse_upload():
     if not text.strip():
         raise ServiceError('empty_text', '文件里没有可用文字')
     return jsonify({'ok': True, 'text': text, 'chars': len(text)})
+
+
+# ---------- 大模型设置 (LLM 子算子) ----------
+
+def _llm_payload() -> dict:
+    """整理成前端直接可用的结构. key 一律只回显掩码, 绝不回传明文."""
+    llm = user_settings.load()['llm']
+    key = user_settings.get_api_key()
+    return {
+        'enabled': bool(llm.get('enabled')),
+        'model': llm.get('model') or user_settings.ALLOWED_MODELS[0],
+        'timeout': llm.get('timeout') or 30,
+        'has_key': bool(key),
+        'key_masked': user_settings.mask_key(key),
+        'key_source': user_settings.key_source(),   # env / settings / none
+        'models': list(user_settings.ALLOWED_MODELS),
+        'settings_path': user_settings.SETTINGS_FILE,
+    }
+
+
+@app.get('/api/settings')
+def get_settings():
+    return jsonify({'ok': True, 'llm': _llm_payload()})
+
+
+@app.post('/api/settings')
+def update_settings():
+    body = request.get_json(silent=True) or {}
+    patch: dict = {}
+
+    if 'enabled' in body:
+        patch['enabled'] = bool(body['enabled'])
+
+    if 'model' in body:
+        model = str(body.get('model') or '').strip()
+        if model not in user_settings.ALLOWED_MODELS:
+            raise ServiceError('bad_model', f'不支持的模型：{model or "(空)"}')
+        patch['model'] = model
+
+    if 'timeout' in body:
+        try:
+            timeout = float(body['timeout'])
+        except (TypeError, ValueError):
+            raise ServiceError('bad_timeout', '超时时间必须是数字')
+        patch['timeout'] = round(min(120.0, max(5.0, timeout)), 1)
+
+    if body.get('clear_key'):
+        patch['api_key'] = ''
+    else:
+        raw = body.get('api_key')
+        if isinstance(raw, str) and raw.strip():
+            key = raw.strip()
+            if len(key) < 8 or any(c.isspace() for c in key):
+                raise ServiceError('bad_key', 'API Key 格式不对，请检查是否多复制了空格')
+            patch['api_key'] = key
+
+    if patch:
+        user_settings.save({'llm': patch})
+        log.info('设置已更新: %s', ', '.join(sorted(patch)))
+
+    return jsonify({'ok': True, 'llm': _llm_payload()})
+
+
+@app.post('/api/settings/test')
+def test_settings():
+    """用输入框里的 key (没填就用已保存的) 真发一次请求, 验证能不能用."""
+    body = request.get_json(silent=True) or {}
+    key = str(body.get('api_key') or '').strip() or user_settings.get_api_key()
+    model = str(body.get('model') or '').strip() or _llm_payload()['model']
+    if model not in user_settings.ALLOWED_MODELS:
+        raise ServiceError('bad_model', f'不支持的模型：{model}')
+    try:
+        result = probe(key, model=model, timeout=20.0)
+    except LLMProbeError as exc:
+        raise ServiceError(exc.code, exc.message)
+    log.info('LLM 连通性测试通过 (%sms)', result['latency_ms'])
+    return jsonify({'ok': True, **result})
 
 
 def _graceful(signum, _frame):

@@ -12,3 +12,11 @@ HanLP/
 
 # ---- 备份与临时目录 ----
 .backup-*/
+
+# ---- 打包产物（脚本与资源提交, 中间文件不提交）----
+build/stage/
+build/cache/
+build/icon-*.png
+build/ui-*.png
+build/preview-*.html
+dist/

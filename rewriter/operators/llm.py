@@ -9,15 +9,20 @@
   任何异常 (网络/超时/JSON/key 缺失/输出不合规) 一律返回 None, 绝不让管线崩.
 
 安全:
-  key 只从环境变量 WASHING_DEEPSEEK_KEY 或本地文件读取, 源码内不含明文 key.
+  key 只从环境变量 WASHING_DEEPSEEK_KEY、本机设置文件
+  (%APPDATA%\\WashingText\\settings.json, 由界面「API 设置」写入)
+  或旧版桌面 WASHING.txt 读取, 源码内不含明文 key.
 """
 import json
 import os
 import random
 import re
+import time
+import urllib.error
 import urllib.request
 from typing import Optional
 
+from .. import settings as user_settings
 from .base import Operator, SentenceCtx
 
 ENDPOINT = 'https://api.deepseek.com/chat/completions'
@@ -75,8 +80,6 @@ class LLMOperator(Operator):
         self.timeout = timeout
         self.max_fail_streak = max(1, int(max_fail_streak))
         self.key_file = key_file
-        self._key: Optional[str] = None
-        self._key_loaded = False
         self._fail_streak = 0
         self._dead = False          # 熔断标志, 进程内生效
         self._calls: dict[str, int] = {}
@@ -84,18 +87,19 @@ class LLMOperator(Operator):
     # ---------- key ----------
 
     def _get_key(self) -> str:
-        if self._key_loaded:
-            return self._key or ''
-        self._key_loaded = True
-        key = os.environ.get(KEY_ENV, '').strip()
-        if not key:
-            try:
-                with open(self.key_file, encoding='utf-8') as f:
-                    key = f.read().strip()
-            except OSError:
-                key = ''
-        self._key = key or None
-        return key
+        """取 key: 环境变量 > 设置页保存的 key > 旧版桌面 WASHING.txt.
+
+        故意不缓存 —— 用户在设置页点完保存, 下一次改写就要生效, 不该逼着重启服务;
+        settings.load() 内部按 mtime 缓存, 这里的额外开销只是一次 stat.
+        """
+        key = user_settings.get_api_key()
+        if key:
+            return key
+        try:
+            with open(self.key_file, encoding='utf-8') as f:
+                return f.read().strip()
+        except OSError:
+            return ''
 
     # ---------- API ----------
 
@@ -208,3 +212,70 @@ class LLMOperator(Operator):
         self._fail_streak += 1
         if self._fail_streak >= self.max_fail_streak:
             self._dead = True
+
+
+# ---------- 设置页用的连通性测试 ----------
+
+class LLMProbeError(Exception):
+    """连通性测试失败: 带机器可读 code 与用户可读原因."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def probe(key: str, model: str = 'deepseek-chat', timeout: float = 15.0) -> dict:
+    """发一次最小请求验证 key / 网络 / 模型是否可用.
+
+    成功返回 {latency_ms, reply, model}; 失败抛 LLMProbeError,
+    原因写成中文 (key 无效 / 余额不足 / 限流 / 连不上), 直接给界面用.
+    """
+    if not (key or '').strip():
+        raise LLMProbeError('no_key', '还没有填写 API Key')
+
+    body = json.dumps({
+        'model': model,
+        'messages': [{'role': 'user', 'content': '只回复两个字：收到'}],
+        'temperature': 0,
+        'max_tokens': 8,
+        'stream': False,
+    }, ensure_ascii=False).encode('utf-8')
+    req = urllib.request.Request(
+        ENDPOINT, data=body,
+        headers={'Content-Type': 'application/json',
+                 'Authorization': 'Bearer ' + key.strip()})
+
+    started = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        detail = ''
+        try:
+            payload = json.loads(exc.read().decode('utf-8'))
+            detail = ((payload or {}).get('error') or {}).get('message') or ''
+        except Exception:  # noqa: BLE001 - 错误体不是 JSON 就只报状态码
+            detail = ''
+        hint = {
+            400: '请求被拒绝（模型名或参数不对）',
+            401: 'API Key 无效或已失效',
+            402: '账户余额不足',
+            403: '该 Key 没有调用权限',
+            429: '请求过于频繁，稍后再试',
+            500: 'DeepSeek 服务端异常，稍后再试',
+            503: 'DeepSeek 服务繁忙，稍后再试',
+        }.get(exc.code, 'DeepSeek 返回错误')
+        suffix = f'：{detail}' if detail else ''
+        raise LLMProbeError(f'http_{exc.code}', f'{hint}（HTTP {exc.code}）{suffix}')
+    except TimeoutError:
+        raise LLMProbeError('timeout', f'请求超时（{timeout:.0f} 秒无响应）')
+    except urllib.error.URLError as exc:
+        raise LLMProbeError('network', f'连不上 api.deepseek.com：{exc.reason}')
+
+    latency_ms = int((time.time() - started) * 1000)
+    try:
+        reply = data['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        raise LLMProbeError('bad_response', 'DeepSeek 返回了无法解析的内容')
+    return {'latency_ms': latency_ms, 'reply': str(reply).strip()[:48], 'model': model}

@@ -7,6 +7,39 @@
 
 ---
 
+## Windows 安装包（分发给别人用）
+
+`dist\WashingText-1.0.0-Setup.exe` 是标准 Windows 安装程序（Inno Setup 打包）：
+
+- 双击安装，默认装到 `C:\Program Files\WashingText`，需管理员确认；
+- 自动创建开始菜单项，勾选后创建桌面快捷方式；
+- 内置 Python 运行时、torch、HanLP 与全部三方依赖，**目标机不用装 Python**；
+- 自带的 HanLP 模型放在安装目录 `models\`（由 `HANLP_HOME` 指向），装完即可离线出稿，不需要再下载；
+- 启动后浏览器自动打开 `http://127.0.0.1:8777`；重复双击只会再开一个标签页，不会起第二个进程；
+- 卸载走「设置 → 应用」或开始菜单的卸载项；`%APPDATA%\WashingText`（API Key、日志）会保留，模型随程序目录一起删除。
+
+首次启动要加载 HanLP 模型，约 40–60 秒，顶栏显示「正在加载模型」，期间别关页面。
+
+### 装完第一件事：填 API Key
+
+页面右上角 **API 设置** → 粘贴 DeepSeek Key → **测试连接**确认可用 → 保存。
+
+Key 只写在本机 `%APPDATA%\WashingText\settings.json`，不上传；不填也能用，LLM 子算子会自动跳过，规则算子照常出稿。
+环境变量 `WASHING_DEEPSEEK_KEY` 优先级更高，适合临时覆盖。
+
+### 自己重新打包
+
+```bash
+.venv/Scripts/python.exe build/package.py      # 组装 build/stage (约 617 MB)
+.venv/Scripts/python.exe build/make_icon.py    # 改过图标才需要
+"C:\Users\你的用户名\AppData\Local\Programs\Inno Setup 6\ISCC.exe" build\installer.iss
+# 产物: dist\WashingText-<版本>-Setup.exe
+```
+
+改了版本号请同步 `build/installer.iss` 里的 `MyAppVersion`。
+
+---
+
 ## 快速开始
 
 ### 方式一: Web 工作台 (推荐, 可视化)
@@ -109,8 +142,10 @@ cd D:\AI\program\washing-text
 
 规则算子对真实学术长句的覆盖率上限约 25%~35%，S10 是唯一能把这个数字拉到 70% 以上的手段。
 
-- **开关**：`config.yaml` → `llm.enabled: true`
-- **密钥**：环境变量 `WASHING_DEEPSEEK_KEY`，或 `~/Desktop/WASHING.txt`（纯 key 文本）
+- **开关**：`config.yaml` → `llm.enabled: true`（Web 界面的「API 设置」也能改, 覆盖优先级更高）
+- **密钥**（按优先级）：环境变量 `WASHING_DEEPSEEK_KEY` → 界面「API 设置」保存的 key
+  (`%APPDATA%\WashingText\settings.json`) → 旧的 `~/Desktop/WASHING.txt`
+- **界面配置**：顶栏「API 设置」可填 Key / 换模型 / 调超时 / 测连通性, 保存后下一次改写立即生效, 不用重启服务
 - **成本**：每句最多 2 次调用，一篇 500 句约 1000 次；`MAX_CALLS_PER_TEXT` 可调
 - **降级**：连续失败 3 次自动熔断，本进程内退回规则算子，不会让整篇失败
 - **输出仍受硬约束**：术语 / 数字 / NER / 否定词 / 引文由 `scorer.hard_check` 统一校验，LLM 不享特权

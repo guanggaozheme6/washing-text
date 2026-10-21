@@ -412,6 +412,140 @@
     return [aHtml, bHtml];
   }
 
+  /* ---------- 大模型设置（LLM 子算子） ---------- */
+
+  const settingsState = { hasKey: false, keySource: 'none' };
+
+  function apiGet(path) {
+    return fetch(path, { headers: { Accept: 'application/json' } })
+      .then(async (resp) => {
+        let data = null;
+        try { data = await resp.json(); } catch { data = null; }
+        if (!data || data.ok !== true) {
+          const code = data && data.error ? data.error.code : 'unknown';
+          const msg = data && data.error ? data.error.message : `请求失败 (HTTP ${resp.status})`;
+          throw new Error(friendlyError(code, msg));
+        }
+        return data;
+      })
+      .catch((err) => {
+        throw err instanceof TypeError
+          ? new Error('无法连接本地服务，请确认服务仍在运行')
+          : err;
+      });
+  }
+
+  function openSettings() {
+    $('#settingsMask').classList.add('open');
+    $('#testResult').hidden = true;
+    loadSettings();
+  }
+
+  function closeSettings() {
+    $('#settingsMask').classList.remove('open');
+  }
+
+  async function loadSettings() {
+    try {
+      const { llm } = await apiGet('/api/settings');
+      settingsState.hasKey = llm.has_key;
+      settingsState.keySource = llm.key_source;
+
+      const sel = $('#setModel');
+      if (!sel.options.length) {
+        llm.models.forEach((m) => {
+          const o = document.createElement('option');
+          o.value = m;
+          o.textContent = m === 'deepseek-chat' ? 'deepseek-chat（推荐，快）' : `${m}（推理更强，慢）`;
+          sel.appendChild(o);
+        });
+      }
+      sel.value = llm.model;
+      $('#setTimeout').value = llm.timeout;
+      $('#setEnabled').checked = llm.enabled;
+      $('#setApiKey').value = '';
+      $('#setApiKey').type = 'password';
+      $('#btnToggleKey').textContent = '显示';
+      $('#setApiKey').placeholder = llm.has_key ? llm.key_masked : 'sk-…（粘贴 DeepSeek 的 Key）';
+      $('#settingsPath').textContent = llm.settings_path;
+
+      const hint = $('#keyHint');
+      if (llm.key_source === 'env') {
+        hint.className = 'field-hint';
+        hint.textContent = `当前生效的是环境变量里的 Key（${llm.key_masked}），它的优先级高于这里填的`;
+      } else if (llm.has_key) {
+        hint.className = 'field-hint ok';
+        hint.textContent = `已配置 ${llm.key_masked}，输入框留空表示不修改`;
+      } else {
+        hint.className = 'field-hint warn';
+        hint.textContent = '还没配置。没有 Key 时 LLM 子算子自动跳过，其余规则算子照常出稿';
+      }
+    } catch (err) {
+      toast(err.message, 'error', 6000);
+    }
+  }
+
+  async function saveSettings() {
+    const btn = $('#btnSaveSettings');
+    btn.disabled = true;
+    try {
+      const payload = {
+        enabled: $('#setEnabled').checked,
+        model: $('#setModel').value,
+        timeout: parseFloat($('#setTimeout').value) || 30,
+      };
+      const key = $('#setApiKey').value.trim();
+      if (key) payload.api_key = key;
+
+      const { llm } = await api('/api/settings', payload);
+      settingsState.hasKey = llm.has_key;
+      $('#setApiKey').value = '';
+      $('#setApiKey').placeholder = llm.has_key ? llm.key_masked : 'sk-…（粘贴 DeepSeek 的 Key）';
+      $('#keyHint').className = llm.has_key ? 'field-hint ok' : 'field-hint warn';
+      $('#keyHint').textContent = llm.has_key
+        ? `已配置 ${llm.key_masked}，输入框留空表示不修改`
+        : '还没配置。没有 Key 时 LLM 子算子自动跳过，其余规则算子照常出稿';
+      toast('设置已保存，下一次改写即刻生效', 'ok', 2600);
+    } catch (err) {
+      toast(err.message, 'error', 6000);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function testSettings() {
+    const box = $('#testResult');
+    const btn = $('#btnTestKey');
+    btn.disabled = true;
+    box.hidden = false;
+    box.className = 'test-result';
+    box.textContent = '正在请求 api.deepseek.com …';
+    try {
+      const payload = { model: $('#setModel').value };
+      const key = $('#setApiKey').value.trim();
+      if (key) payload.api_key = key;
+      const res = await api('/api/settings/test', payload);
+      box.className = 'test-result ok';
+      box.textContent = `连接正常 · ${res.model} · 往返 ${res.latency_ms} ms · 模型回复「${res.reply}」`;
+    } catch (err) {
+      box.className = 'test-result err';
+      box.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function clearSettingsKey() {
+    if (!window.confirm('确定清除本机保存的 API Key？清除后 LLM 子算子将跳过。')) return;
+    try {
+      await api('/api/settings', { clear_key: true });
+      await loadSettings();
+      toast('API Key 已清除', 'ok', 2400);
+    } catch (err) {
+      toast(err.message, 'error', 6000);
+    }
+  }
+
   /* ---------- 事件绑定 ---------- */
 
   function bind() {
@@ -436,6 +570,25 @@
     $('#btnRewrite').addEventListener('click', doRewrite);
 
     $('#btnBackToEdit').addEventListener('click', () => showState('empty'));
+
+    // 大模型设置弹层
+    $('#btnSettings').addEventListener('click', openSettings);
+    $('#btnCloseSettings').addEventListener('click', closeSettings);
+    $('#settingsMask').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeSettings();
+    });
+    $('#btnToggleKey').addEventListener('click', () => {
+      const input = $('#setApiKey');
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      $('#btnToggleKey').textContent = show ? '隐藏' : '显示';
+    });
+    $('#btnSaveSettings').addEventListener('click', saveSettings);
+    $('#btnTestKey').addEventListener('click', testSettings);
+    $('#btnClearKey').addEventListener('click', clearSettingsKey);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && $('#settingsMask').classList.contains('open')) closeSettings();
+    });
 
     $('#btnNewRun').addEventListener('click', () => {
       const seedEl = $('#optSeed');
