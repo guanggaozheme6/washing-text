@@ -5,7 +5,7 @@
 
 #define MyAppName "文本改写降重工作台"
 #define MyAppCode "WashingText"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "washing-text"
 #define LaunchExe "pythonw.exe"
 #define LaunchArgs """{app}\app\launcher.py"""

@@ -9,6 +9,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
 
@@ -23,6 +24,9 @@ from web.service import KNOWN_OPS, RewriteService, ServiceError  # noqa: E402
 
 HOST = os.environ.get('WASHING_HOST', '127.0.0.1')
 PORT = int(os.environ.get('WASHING_PORT', '8777'))
+# 启动器靠它判断端口上跑的是不是同一版服务, 升版本时两处一起改
+APP_ID = 'washing-text'
+APP_VERSION = '1.0.1'
 MAX_TEXT_CHARS = 100000
 MAX_BODY_BYTES = 2 * 1024 * 1024
 
@@ -63,12 +67,76 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_BODY_BYTES
 service = RewriteService()
 
 
+# ---------- 服务生命周期 ----------
+# 常驻的 HanLP 模型占 1 GB 上下内存, 用户不该为了看一篇文章让它一直挂着.
+# 两条退路: 页面全关掉后延时退出(刷新/多标签页会取消), 以及用户点"停止服务"。
+
+VIEW_TTL = 180.0        # 这么久没有任何页面请求, 就认为没人看了
+BYE_GRACE = 30.0        # 收到"页面关闭"后的宽限期, 留给刷新和多标签页续命
+
+_last_seen = time.time()
+_shutdown_timer = None
+_lifecycle_lock = threading.Lock()
+
+
+def _hard_exit(reason: str) -> None:
+    log.info('停止服务: %s', reason)
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 - 输出流可能已被重定向/关闭
+        pass
+    os._exit(0)
+
+
+def _cancel_shutdown() -> None:
+    global _shutdown_timer
+    with _lifecycle_lock:
+        if _shutdown_timer is not None:
+            _shutdown_timer.cancel()
+            _shutdown_timer = None
+
+
+def _schedule_shutdown(delay: float) -> None:
+    global _shutdown_timer
+    with _lifecycle_lock:
+        if _shutdown_timer is not None:
+            _shutdown_timer.cancel()
+        timer = threading.Timer(delay, _hard_exit, args=('页面已全部关闭',))
+        timer.daemon = True
+        timer.start()
+        _shutdown_timer = timer
+
+
+def _auto_stop_enabled() -> bool:
+    if os.environ.get('WASHING_NO_AUTO_STOP'):
+        return False
+    try:
+        return bool(user_settings.load()['server'].get('auto_stop', True))
+    except Exception:  # noqa: BLE001 - 配置坏了就当作关闭, 别把服务搞挂
+        return False
+
+
+def _idle_watchdog() -> None:
+    """兜底: 浏览器异常退出没来得及发 bye 时, 靠心跳超时收场."""
+    while True:
+        time.sleep(15)
+        if _auto_stop_enabled() and time.time() - _last_seen > VIEW_TTL:
+            _hard_exit(f'超过 {int(VIEW_TTL)} 秒没有页面请求')
+
+
+threading.Thread(target=_idle_watchdog, daemon=True, name='idle-watchdog').start()
+
+
 # ---------- 请求钩子与错误处理 ----------
 
 @app.before_request
 def _assign_rid():
+    global _last_seen
     g.rid = uuid.uuid4().hex[:8]
     g.t0 = time.time()
+    _last_seen = time.time()
+    _cancel_shutdown()      # 有任何新请求(含刷新)就把待定退出撤销
 
 
 @app.after_request
@@ -204,7 +272,8 @@ def index():
 
 @app.get('/api/health')
 def health():
-    return jsonify({'ok': True, 'time': time.time()})
+    return jsonify({'ok': True, 'app': APP_ID, 'version': APP_VERSION,
+                    'time': time.time()})
 
 
 @app.get('/api/status')
@@ -237,9 +306,10 @@ def parse_upload():
 
 # ---------- 大模型设置 (LLM 子算子) ----------
 
-def _llm_payload() -> dict:
+def _settings_payload() -> dict:
     """整理成前端直接可用的结构. key 一律只回显掩码, 绝不回传明文."""
-    llm = user_settings.load()['llm']
+    cfg = user_settings.load()
+    llm = cfg['llm']
     key = user_settings.get_api_key()
     return {
         'enabled': bool(llm.get('enabled')),
@@ -250,21 +320,26 @@ def _llm_payload() -> dict:
         'key_source': user_settings.key_source(),   # env / settings / none
         'models': list(user_settings.ALLOWED_MODELS),
         'settings_path': user_settings.SETTINGS_FILE,
+        'auto_stop': bool(cfg['server'].get('auto_stop', True)),
     }
 
 
 @app.get('/api/settings')
 def get_settings():
-    return jsonify({'ok': True, 'llm': _llm_payload()})
+    return jsonify({'ok': True, 'llm': _settings_payload()})
 
 
 @app.post('/api/settings')
 def update_settings():
     body = request.get_json(silent=True) or {}
     patch: dict = {}
+    server_patch: dict = {}
 
     if 'enabled' in body:
         patch['enabled'] = bool(body['enabled'])
+
+    if 'auto_stop' in body:
+        server_patch['auto_stop'] = bool(body['auto_stop'])
 
     if 'model' in body:
         model = str(body.get('model') or '').strip()
@@ -289,11 +364,16 @@ def update_settings():
                 raise ServiceError('bad_key', 'API Key 格式不对，请检查是否多复制了空格')
             patch['api_key'] = key
 
+    to_save: dict = {}
     if patch:
-        user_settings.save({'llm': patch})
-        log.info('设置已更新: %s', ', '.join(sorted(patch)))
+        to_save['llm'] = patch
+    if server_patch:
+        to_save['server'] = server_patch
+    if to_save:
+        user_settings.save(to_save)
+        log.info('设置已更新: %s', ', '.join(sorted(list(patch) + list(server_patch))))
 
-    return jsonify({'ok': True, 'llm': _llm_payload()})
+    return jsonify({'ok': True, 'llm': _settings_payload()})
 
 
 @app.post('/api/settings/test')
@@ -301,7 +381,7 @@ def test_settings():
     """用输入框里的 key (没填就用已保存的) 真发一次请求, 验证能不能用."""
     body = request.get_json(silent=True) or {}
     key = str(body.get('api_key') or '').strip() or user_settings.get_api_key()
-    model = str(body.get('model') or '').strip() or _llm_payload()['model']
+    model = str(body.get('model') or '').strip() or _settings_payload()['model']
     if model not in user_settings.ALLOWED_MODELS:
         raise ServiceError('bad_model', f'不支持的模型：{model}')
     try:
@@ -310,6 +390,34 @@ def test_settings():
         raise ServiceError(exc.code, exc.message)
     log.info('LLM 连通性测试通过 (%sms)', result['latency_ms'])
     return jsonify({'ok': True, **result})
+
+
+# ---------- 服务开关 (让用户能收回模型占的内存) ----------
+
+@app.post('/api/ping')
+def ping():
+    """页面心跳: 有它在, 自动退出就不会误伤还开着的页面."""
+    return jsonify({'ok': True})
+
+
+@app.post('/api/bye')
+def bye():
+    """页面正在关闭 (sendBeacon): 留一段宽限, 刷新或多标签页会把它取消."""
+    scheduled = False
+    if _auto_stop_enabled():
+        _schedule_shutdown(BYE_GRACE)
+        scheduled = True
+    return jsonify({'ok': True, 'scheduled': scheduled, 'grace': BYE_GRACE})
+
+
+@app.post('/api/shutdown')
+def shutdown():
+    """用户主动停止: 立刻退出, 内存马上还回去."""
+    log.info('用户点击停止服务')
+    timer = threading.Timer(0.4, _hard_exit, args=('用户点击停止服务',))
+    timer.daemon = True
+    timer.start()
+    return jsonify({'ok': True})
 
 
 def _graceful(signum, _frame):

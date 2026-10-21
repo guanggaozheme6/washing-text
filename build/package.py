@@ -192,20 +192,30 @@ def write_pth(pydir: str) -> None:
 
 def main() -> int:
     print(f'项目根: {ROOT}')
-    step('清理 build/stage')
-    rmtree(STAGE)
+    force = '--force' in sys.argv
     os.makedirs(STAGE, exist_ok=True)
 
-    step('准备 Python 运行时')
-    fetch_python()
-    pydir = unpack_python()
-    copy_vc_runtime(pydir)
-    write_pth(pydir)
+    pydir = os.path.join(STAGE, 'python')
+    need_runtime = force or not os.path.isfile(os.path.join(pydir, 'python.exe'))
 
-    step('安装三方依赖')
-    install_deps(pydir)
+    if need_runtime:
+        step('准备 Python 运行时')
+        if force:
+            rmtree(STAGE)
+            os.makedirs(STAGE, exist_ok=True)
+        fetch_python()
+        pydir = unpack_python()
+        copy_vc_runtime(pydir)
+        write_pth(pydir)
+
+        step('安装三方依赖')
+        install_deps(pydir)
+    else:
+        # 依赖没动时不重建: 661 MB 的复制没必要, 也避免一次性删上万文件
+        print('\n== 运行时已存在, 跳过(需要重装依赖请加 --force)')
 
     step('复制应用代码')
+    rmtree(os.path.join(STAGE, 'app'))      # 只重建代码目录, 文件少, 删得干净
     copy_app()
 
     step('完成')

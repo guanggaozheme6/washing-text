@@ -9,7 +9,7 @@
 
 ## Windows 安装包（分发给别人用）
 
-`dist\WashingText-1.0.0-Setup.exe` 是标准 Windows 安装程序（Inno Setup 打包）：
+`dist\WashingText-1.0.1-Setup.exe` 是标准 Windows 安装程序（Inno Setup 打包）：
 
 - 双击安装，默认装到 `C:\Program Files\WashingText`，需管理员确认；
 - 自动创建开始菜单项，勾选后创建桌面快捷方式；
@@ -26,6 +26,17 @@
 
 Key 只写在本机 `%APPDATA%\WashingText\settings.json`，不上传；不填也能用，LLM 子算子会自动跳过，规则算子照常出稿。
 环境变量 `WASHING_DEEPSEEK_KEY` 优先级更高，适合临时覆盖。
+
+### 用完就关，别让模型占内存
+
+常驻的 HanLP 模型占 1 GB 上下内存，两种方式收回：
+
+- 点页面右上角 **停止服务** → 立刻退出，页面显示"服务已停止"；
+- 什么都不点也行 → **所有页面关掉 30 秒后自动退出**（刷新、多标签页、切走再切回都不会误杀，
+  因为页面每 15 秒有心跳，任何请求都会撤销待定的退出）。
+
+不想自动退（例如频繁开关页面看稿），到 **API 设置** 里关掉「关闭页面后自动停止服务」。
+服务退出后再打开页面是连不上的，需要重新双击桌面图标启动（要重新加载模型，约 40–60 秒）。
 
 ### 自己重新打包
 
@@ -240,10 +251,16 @@ D:\AI\program\washing-text\
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `/` | GET | 工作台页面 |
-| `/api/health` | GET | 存活探测 |
+| `/api/health` | GET | 存活探测 (返回 `app` + `version`, 供启动器判断端口上是不是自己) |
 | `/api/status` | GET | 模型预热状态 + 默认参数 + 忙碌标志 |
 | `/api/evaluate` | POST | 只评估: `{text, corpus_dir?, whitelist?, max_run?}` |
 | `/api/rewrite` | POST | 改写: `{text, rounds?, seed?, ops?, corpus_dir?, whitelist?, max_run?}` |
+| `/api/parse` | POST | 解析上传的 docx/txt |
+| `/api/settings` | GET/POST | 大模型设置 (Key / 模型 / 超时 / 开关 / 页面关闭自动退出) |
+| `/api/settings/test` | POST | 用当前 Key 真发一次请求验证连通性 |
+| `/api/ping` | POST | 页面心跳, 15 秒一次, 阻止自动退出 |
+| `/api/bye` | POST | 页面关闭通知, 30 秒宽限后退出 (有请求就撤销) |
+| `/api/shutdown` | POST | 主动停止服务, 立即退出释放内存 |
 
 错误统一返回 `{ok:false, error:{code, message}}` (code 用于前端映射友好文案)。服务默认只监听 `127.0.0.1`；端口可用环境变量 `WASHING_PORT` 覆盖。
 

@@ -463,6 +463,7 @@
       sel.value = llm.model;
       $('#setTimeout').value = llm.timeout;
       $('#setEnabled').checked = llm.enabled;
+      $('#setAutoStop').checked = llm.auto_stop !== false;
       $('#setApiKey').value = '';
       $('#setApiKey').type = 'password';
       $('#btnToggleKey').textContent = '显示';
@@ -491,6 +492,7 @@
     try {
       const payload = {
         enabled: $('#setEnabled').checked,
+        auto_stop: $('#setAutoStop').checked,
         model: $('#setModel').value,
         timeout: parseFloat($('#setTimeout').value) || 30,
       };
@@ -546,6 +548,44 @@
     }
   }
 
+  /* ---------- 服务开关（收回模型占的内存） ---------- */
+
+  let heartbeatTimer = null;
+
+  function startHeartbeat() {
+    // 15 秒一次: 只要还有一个页面开着, 后端就不会自动退出
+    heartbeatTimer = setInterval(() => {
+      fetch('/api/ping', { method: 'POST' }).catch(() => {});
+    }, 15000);
+  }
+
+  function stopServer() {
+    const ok = window.confirm(
+      '停止后本地模型会退出，内存立即释放。\n'
+      + '下次使用请重新双击桌面图标启动。\n\n确定停止吗？');
+    if (!ok) return;
+
+    if (state.pollTimer) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+
+    // 后端收到请求 0.4 秒后就退出, 响应可能来不及回来, 所以先摆遮罩
+    $('#stoppedMask').hidden = false;
+    fetch('/api/shutdown', { method: 'POST', keepalive: true }).catch(() => {});
+  }
+
+  // 关闭/刷新页面时通知后端; 刷新会在 1 秒内重新请求, 后端据此撤销退出
+  window.addEventListener('pagehide', () => {
+    try {
+      navigator.sendBeacon('/api/bye');
+    } catch {
+      /* 没有 sendBeacon 就靠心跳超时兜底 */
+    }
+  });
+
   /* ---------- 事件绑定 ---------- */
 
   function bind() {
@@ -586,6 +626,7 @@
     $('#btnSaveSettings').addEventListener('click', saveSettings);
     $('#btnTestKey').addEventListener('click', testSettings);
     $('#btnClearKey').addEventListener('click', clearSettingsKey);
+    $('#btnStopServer').addEventListener('click', stopServer);
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && $('#settingsMask').classList.contains('open')) closeSettings();
     });
@@ -682,4 +723,5 @@
   showState('empty');
   pollStatus();
   state.pollTimer = setInterval(pollStatus, 2500);
+  startHeartbeat();
 })();

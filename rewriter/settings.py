@@ -30,6 +30,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         'model': 'deepseek-chat',
         'timeout': 30,
     },
+    'server': {
+        # 所有页面关掉后自动退出, 把常驻的 HanLP 模型内存(约 1 GB)收回来
+        'auto_stop': True,
+    },
 }
 
 ALLOWED_MODELS = ('deepseek-chat', 'deepseek-reasoner')
