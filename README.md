@@ -63,7 +63,7 @@ build\compile_exe.cmd                          # 改过启动器 C 代码才需�
 ### 方式一: Web 工作台 (推荐, 可视化)
 
 ```bash
-cd D:\AI\program\washing-text
+cd 自己电脑位置\washing-text
 .venv/Scripts/python.exe web/app.py
 # 浏览器打开 http://127.0.0.1:8777
 ```
@@ -77,7 +77,7 @@ cd D:\AI\program\washing-text
 ### 方式二: 命令行
 
 ```bash
-cd D:\AI\program\washing-text
+cd 自己电脑位置\washing-text
 
 # 1) 只评估不改写 (先看稿子的"危险程度")
 .venv/Scripts/python.exe cli.py demo.txt --dry-run --corpus data/corpus/
@@ -209,7 +209,7 @@ total = 0.45 × novelty + 0.30 × fidelity + 0.25 × fluency
 ## 目录结构
 
 ```
-D:\AI\program\washing-text\
+自己电脑位置\washing-text\
 ├── .venv\                    虚拟环境 (Python 3.13 + hanlp 2.1.5 + torch + flask)
 ├── HanLP\                    HanLP 源码
 ├── PLAN.md                   设计方案
