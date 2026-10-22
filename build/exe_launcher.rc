@@ -1,0 +1,31 @@
+// WashingText.exe 的资源: 应用图标 + 版本信息
+// 编译: windres --codepage 65001 exe_launcher.rc -O coff -o exe_launcher.res
+
+#include <winver.h>
+
+1 ICON "WashingText.ico"
+
+1 VERSIONINFO
+FILEVERSION     1,0,2,0
+PRODUCTVERSION  1,0,2,0
+FILEOS          VOS_NT
+FILETYPE        VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080404B0"
+    BEGIN
+      VALUE "CompanyName", "washing-text"
+      VALUE "FileDescription", "文本改写降重工作台"
+      VALUE "FileVersion", "1.0.2"
+      VALUE "InternalName", "WashingText"
+      VALUE "OriginalFilename", "WashingText.exe"
+      VALUE "ProductName", "文本改写降重工作台"
+      VALUE "ProductVersion", "1.0.2"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0804, 1200
+  END
+END

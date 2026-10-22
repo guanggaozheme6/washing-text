@@ -20,7 +20,7 @@
 
   const state = {
     modelReady: false, modelFailed: false, busy: false,
-    lastResult: null, pollTimer: null,
+    lastResult: null, pollTimer: null, lastParamsToggle: 0,
   };
 
   /* ---------- 通用工具 ---------- */
@@ -414,7 +414,7 @@
 
   /* ---------- 大模型设置（LLM 子算子） ---------- */
 
-  const settingsState = { hasKey: false, keySource: 'none' };
+  const settingsState = { hasKey: false, keySource: 'none', providers: [] };
 
   function apiGet(path) {
     return fetch(path, { headers: { Accept: 'application/json' } })
@@ -445,29 +445,64 @@
     $('#settingsMask').classList.remove('open');
   }
 
+  function currentProvider() {
+    const id = $('#setProvider').value;
+    return (settingsState.providers || []).find((p) => p.id === id) || null;
+  }
+
+  function renderProviderOptions(providers, selected) {
+    const sel = $('#setProvider');
+    if (!sel.options.length) {
+      providers.forEach((p) => {
+        const o = document.createElement('option');
+        o.value = p.id;
+        o.textContent = p.label;
+        sel.appendChild(o);
+      });
+    }
+    sel.value = selected;
+  }
+
+  function renderModelOptions(providerId) {
+    const prov = (settingsState.providers || []).find((p) => p.id === providerId);
+    const list = $('#modelOptions');
+    list.innerHTML = '';
+    (prov ? prov.models : []).forEach((m) => {
+      const o = document.createElement('option');
+      o.value = m;
+      list.appendChild(o);
+    });
+    const keyInput = $('#setApiKey');
+    const placeholders = {
+      deepseek: 'sk-…（DeepSeek 控制台创建）',
+      openai: 'sk-…（OpenAI 平台创建）',
+      claude: 'sk-ant-…（Anthropic 控制台创建）',
+    };
+    if (!settingsState.hasKey) {
+      keyInput.placeholder = placeholders[providerId] || '粘贴对应服务商的 Key';
+    }
+    $('#providerHint').textContent = prov
+      ? `${prov.label} · 模型可从建议里选，也能直接手填`
+      : '';
+  }
+
   async function loadSettings() {
     try {
       const { llm } = await apiGet('/api/settings');
       settingsState.hasKey = llm.has_key;
       settingsState.keySource = llm.key_source;
+      settingsState.providers = llm.providers || [];
 
-      const sel = $('#setModel');
-      if (!sel.options.length) {
-        llm.models.forEach((m) => {
-          const o = document.createElement('option');
-          o.value = m;
-          o.textContent = m === 'deepseek-chat' ? 'deepseek-chat（推荐，快）' : `${m}（推理更强，慢）`;
-          sel.appendChild(o);
-        });
-      }
-      sel.value = llm.model;
+      renderProviderOptions(settingsState.providers, llm.provider);
+      renderModelOptions(llm.provider);
+      $('#setModel').value = llm.model;
       $('#setTimeout').value = llm.timeout;
       $('#setEnabled').checked = llm.enabled;
       $('#setAutoStop').checked = llm.auto_stop !== false;
       $('#setApiKey').value = '';
       $('#setApiKey').type = 'password';
       $('#btnToggleKey').textContent = '显示';
-      $('#setApiKey').placeholder = llm.has_key ? llm.key_masked : 'sk-…（粘贴 DeepSeek 的 Key）';
+      if (llm.has_key) $('#setApiKey').placeholder = llm.key_masked;
       $('#settingsPath').textContent = llm.settings_path;
 
       const hint = $('#keyHint');
@@ -493,7 +528,8 @@
       const payload = {
         enabled: $('#setEnabled').checked,
         auto_stop: $('#setAutoStop').checked,
-        model: $('#setModel').value,
+        provider: $('#setProvider').value,
+        model: $('#setModel').value.trim(),
         timeout: parseFloat($('#setTimeout').value) || 30,
       };
       const key = $('#setApiKey').value.trim();
@@ -502,7 +538,9 @@
       const { llm } = await api('/api/settings', payload);
       settingsState.hasKey = llm.has_key;
       $('#setApiKey').value = '';
-      $('#setApiKey').placeholder = llm.has_key ? llm.key_masked : 'sk-…（粘贴 DeepSeek 的 Key）';
+      $('#setApiKey').placeholder = llm.has_key
+        ? llm.key_masked
+        : (currentProvider() ? `粘贴 ${currentProvider().label} 的 Key` : '粘贴对应服务商的 Key');
       $('#keyHint').className = llm.has_key ? 'field-hint ok' : 'field-hint warn';
       $('#keyHint').textContent = llm.has_key
         ? `已配置 ${llm.key_masked}，输入框留空表示不修改`
@@ -518,17 +556,22 @@
   async function testSettings() {
     const box = $('#testResult');
     const btn = $('#btnTestKey');
+    const prov = currentProvider();
     btn.disabled = true;
     box.hidden = false;
     box.className = 'test-result';
-    box.textContent = '正在请求 api.deepseek.com …';
+    box.textContent = `正在请求 ${prov ? prov.label : ''} …`;
     try {
-      const payload = { model: $('#setModel').value };
+      const payload = {
+        provider: $('#setProvider').value,
+        model: $('#setModel').value.trim(),
+      };
       const key = $('#setApiKey').value.trim();
       if (key) payload.api_key = key;
       const res = await api('/api/settings/test', payload);
       box.className = 'test-result ok';
-      box.textContent = `连接正常 · ${res.model} · 往返 ${res.latency_ms} ms · 模型回复「${res.reply}」`;
+      box.textContent = `连接正常 · ${res.provider}/${res.model} · 往返 ${res.latency_ms} ms`
+        + ` · 模型回复「${res.reply}」`;
     } catch (err) {
       box.className = 'test-result err';
       box.textContent = err.message;
@@ -595,6 +638,21 @@
       $('#charCount').textContent = `${src.value.length} 字`;
     });
 
+    // 参数面板: 记住开合状态; 320ms 内的重复点击只算一次
+    // (某些鼠标/触控下 summary 会连发两次 click, 表现就是"点开又自己关掉")
+    const paramsBox = $('#paramsBox');
+    if (localStorage.getItem('wt.paramsOpen') === '1') paramsBox.open = true;
+    paramsBox.addEventListener('toggle', () => {
+      localStorage.setItem('wt.paramsOpen', paramsBox.open ? '1' : '0');
+    });
+    paramsBox.querySelector('summary').addEventListener('click', (e) => {
+      e.preventDefault();
+      const now = Date.now();
+      if (now - state.lastParamsToggle < 320) return;
+      state.lastParamsToggle = now;
+      paramsBox.open = !paramsBox.open;
+    });
+
     $('#btnLoadDemo').addEventListener('click', () => {
       src.value = DEMO_TEXT;
       src.dispatchEvent(new Event('input'));
@@ -622,6 +680,14 @@
       const show = input.type === 'password';
       input.type = show ? 'text' : 'password';
       $('#btnToggleKey').textContent = show ? '隐藏' : '显示';
+    });
+    $('#setProvider').addEventListener('change', () => {
+      const pid = $('#setProvider').value;
+      renderModelOptions(pid);
+      const prov = currentProvider();
+      // 换服务商时把模型带成该家的默认值, 免得拿 A 家模型名去敲 B 家 API
+      if (prov && prov.models.length) $('#setModel').value = prov.models[0];
+      $('#testResult').hidden = true;
     });
     $('#btnSaveSettings').addEventListener('click', saveSettings);
     $('#btnTestKey').addEventListener('click', testSettings);

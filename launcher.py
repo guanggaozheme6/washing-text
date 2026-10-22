@@ -23,7 +23,7 @@ import webbrowser
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_ID = 'washing-text'
-APP_VERSION = '1.0.1'          # 必须与 web/app.py 的 APP_VERSION 一致
+APP_VERSION = '1.0.2'          # 必须与 web/app.py 的 APP_VERSION 一致
 BASE_PORT = int(os.environ.get('WASHING_PORT', '8777'))
 PORT_TRIES = 12
 TITLE = '文本改写降重工作台'

@@ -19,4 +19,5 @@ build/cache/
 build/icon-*.png
 build/ui-*.png
 build/preview-*.html
+build/*.res
 dist/

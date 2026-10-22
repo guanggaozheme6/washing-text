@@ -9,10 +9,11 @@
 
 ## Windows 安装包（分发给别人用）
 
-`dist\WashingText-1.0.1-Setup.exe` 是标准 Windows 安装程序（Inno Setup 打包）：
+`dist\WashingText-1.0.2-Setup.exe` 是标准 Windows 安装程序（Inno Setup 打包）：
 
 - 双击安装，默认装到 `C:\Program Files\WashingText`，需管理员确认；
-- 自动创建开始菜单项，勾选后创建桌面快捷方式；
+- 安装目录里有 **`WashingText.exe`** —— 双击它就是启动应用，不再是指向 `pythonw.exe` 的快捷方式；
+- 自动创建开始菜单项（含「使用说明」），勾选后创建桌面快捷方式；
 - 内置 Python 运行时、torch、HanLP 与全部三方依赖，**目标机不用装 Python**；
 - 自带的 HanLP 模型放在安装目录 `models\`（由 `HANLP_HOME` 指向），装完即可离线出稿，不需要再下载；
 - 启动后浏览器自动打开 `http://127.0.0.1:8777`；重复双击只会再开一个标签页，不会起第二个进程；
@@ -22,10 +23,14 @@
 
 ### 装完第一件事：填 API Key
 
-页面右上角 **API 设置** → 粘贴 DeepSeek Key → **测试连接**确认可用 → 保存。
+页面右上角 **API 设置** → 选服务商（**DeepSeek / OpenAI / Claude**）→ 粘贴对应 Key
+→ **测试连接**确认可用 → 保存。
 
-Key 只写在本机 `%APPDATA%\WashingText\settings.json`，不上传；不填也能用，LLM 子算子会自动跳过，规则算子照常出稿。
-环境变量 `WASHING_DEEPSEEK_KEY` 优先级更高，适合临时覆盖。
+- 三家的接口差异（endpoint、鉴权头、响应结构）在 `operators/llm.py` 的 `PROVIDER_API` 里统一处理；
+- 模型名不锁死：界面给建议值，也能直接手填（中转服务/新模型都能用）；
+- 切换服务商时会自动把模型带成该家的默认值，避免拿 A 家模型名去敲 B 家 API；
+- Key 只写在本机 `%APPDATA%\WashingText\settings.json`，不上传；不填也能用，LLM 子算子会自动跳过。
+- 环境变量 `WASHING_DEEPSEEK_KEY` 优先级更高，适合临时覆盖。
 
 ### 用完就关，别让模型占内存
 
@@ -41,13 +46,15 @@ Key 只写在本机 `%APPDATA%\WashingText\settings.json`，不上传；不填�
 ### 自己重新打包
 
 ```bash
-.venv/Scripts/python.exe build/package.py      # 组装 build/stage (约 617 MB)
+.venv/Scripts/python.exe build/package.py      # 组装 build/stage (增量: 依赖没变就只重建 app)
 .venv/Scripts/python.exe build/make_icon.py    # 改过图标才需要
+build\compile_exe.cmd                          # 改过启动器 C 代码才需要 (需要 MinGW-w64)
 "C:\Users\你的用户名\AppData\Local\Programs\Inno Setup 6\ISCC.exe" build\installer.iss
 # 产物: dist\WashingText-<版本>-Setup.exe
 ```
 
-改了版本号请同步 `build/installer.iss` 里的 `MyAppVersion`。
+版本号在四处：`build/package.py`、`web/app.py`、`launcher.py`、`build/installer.iss`。
+`package.py` 开跑时会校验一致性，不一致直接报错，不会打出"版本各说各话"的包。
 
 ---
 
@@ -145,7 +152,7 @@ cd D:\AI\program\washing-text
 | S7 | **名词化切换** | "实现分配是目标" → "分配的实现是目标" | ★★☆ | `operators/attrib.py` |
 | S8 | **同义替换** | 词级替换 (默认关, 风险收益比最差) | ★☆☆ | `operators/synonym.py` |
 | S9 | **生成式兜底** | SimBERT / LLM / 回译 (默认关, 需自行配置) | ★★★ | `operators/generative.py` |
-| S10 | **大模型整句重写** | 整句重构, 保持原意换句法 (需 DeepSeek key) | ★★★ | `operators/llm.py` |
+| S10 | **大模型整句重写** | 整句重构, 保持原意换句法 (DeepSeek / OpenAI / Claude) | ★★★ | `operators/llm.py` |
 
 建议实施顺序: S1 → S2 → S4 → S5 → S3 → S6 → S7 → S8 → S9 (已在 `config.yaml` 默认启用前六个)。
 
@@ -154,9 +161,10 @@ cd D:\AI\program\washing-text
 规则算子对真实学术长句的覆盖率上限约 25%~35%，S10 是唯一能把这个数字拉到 70% 以上的手段。
 
 - **开关**：`config.yaml` → `llm.enabled: true`（Web 界面的「API 设置」也能改, 覆盖优先级更高）
-- **密钥**（按优先级）：环境变量 `WASHING_DEEPSEEK_KEY` → 界面「API 设置」保存的 key
+- **服务商**：`llm.provider` 可选 `deepseek` / `openai` / `claude`，模型名自由填
+- **密钥**（按优先级）：环境变量 `WASHING_DEEPSEEK_KEY`（三家通用）→ 界面「API 设置」保存的 key
   (`%APPDATA%\WashingText\settings.json`) → 旧的 `~/Desktop/WASHING.txt`
-- **界面配置**：顶栏「API 设置」可填 Key / 换模型 / 调超时 / 测连通性, 保存后下一次改写立即生效, 不用重启服务
+- **界面配置**：顶栏「API 设置」可换服务商/填 Key/换模型/调超时/测连通性, 保存后下一次改写立即生效, 不用重启服务
 - **成本**：每句最多 2 次调用，一篇 500 句约 1000 次；`MAX_CALLS_PER_TEXT` 可调
 - **降级**：连续失败 3 次自动熔断，本进程内退回规则算子，不会让整篇失败
 - **输出仍受硬约束**：术语 / 数字 / NER / 否定词 / 引文由 `scorer.hard_check` 统一校验，LLM 不享特权

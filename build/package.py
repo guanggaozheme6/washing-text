@@ -41,7 +41,35 @@ TORCH_SKIP = {'include', 'test'}
 VC_DLLS = ('msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
            'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll')
 
-APP_ITEMS = ('config.yaml', 'launcher.py', 'README.md', 'data', 'rewriter', 'web')
+APP_ITEMS = ('config.yaml', 'launcher.py', 'data', 'rewriter', 'web')
+
+# 版本号同时出现在四处, 打包前统一校验, 免得装出来"关于"里各说各话
+VERSION = '1.0.2'
+
+USER_GUIDE = """文本改写降重工作台 v{version}
+
+【启动】
+  双击 WashingText.exe（或桌面上的同名快捷方式）。
+  首次启动要加载模型，约 40-60 秒，等页面顶栏显示「模型就绪」再开始改稿。
+  浏览器一般会自动打开；没打开就手动访问 http://127.0.0.1:8777
+
+【填 API Key（可选，但强烈建议）】
+  页面右上角「API 设置」→ 选服务商（DeepSeek / OpenAI / Claude）
+  → 粘贴对应服务商的 Key → 点「测试连接」确认能用 → 保存。
+  Key 只写在本机 %APPDATA%\\WashingText\\settings.json，不会上传到任何服务器。
+  不填也能用：大模型改写会被跳过，规则算子照常出稿，只是改写幅度小一些。
+
+【用完记得关掉】
+  点页面右上角「停止服务」立即退出；
+  或者直接关掉页面，30 秒后会自动退出，把模型占的约 1 GB 内存还回来。
+  下次使用：重新双击 WashingText.exe。
+
+【遇到问题看这里】
+  运行日志：%APPDATA%\\WashingText\\logs\\web.log
+  个人设置：%APPDATA%\\WashingText\\settings.json
+  卸载方式：Windows「设置 → 应用」里卸载，或在开始菜单点「卸载」。
+            卸载不会删除上面这两个文件。
+"""
 
 
 # ---------- 长路径安全的文件操作 (torch 目录很深, Windows 260 上限会炸) ----------
@@ -151,6 +179,65 @@ def install_deps(pydir: str) -> None:
     print(f'  合计 {total} 个文件, {mb(dir_size(dst))}')
 
 
+def check_versions() -> None:
+    """四处版本号必须一致: web/app.py、launcher.py、installer.iss、本文件."""
+    import re
+
+    def grab(path: str, pattern: str) -> str | None:
+        try:
+            with open(path, encoding='utf-8-sig') as f:
+                text = f.read()
+        except OSError:
+            return None
+        m = re.search(pattern, text)
+        return m.group(1) if m else None
+
+    found = {
+        'web/app.py': grab(os.path.join(ROOT, 'web', 'app.py'),
+                           r"APP_VERSION\s*=\s*'([\d.]+)'"),
+        'launcher.py': grab(os.path.join(ROOT, 'launcher.py'),
+                            r"APP_VERSION\s*=\s*'([\d.]+)'"),
+        'installer.iss': grab(os.path.join(BUILD, 'installer.iss'),
+                              r'MyAppVersion\s+"([\d.]+)"'),
+        'package.py': VERSION,
+    }
+    bad = {name: ver for name, ver in found.items() if ver != VERSION}
+    if bad:
+        raise SystemExit(f'版本号不一致（应为 {VERSION}）: {bad}')
+    print(f'版本号校验通过: {VERSION}')
+
+
+def copy_launcher_exe() -> None:
+    """应用入口 exe: 用户双击的就是它, 而不是"指向解释器的快捷方式"."""
+    src = os.path.join(BUILD, 'WashingText.exe')
+    if not os.path.isfile(src):
+        raise SystemExit('缺少 build/WashingText.exe —— 先跑 build/compile_exe.cmd')
+    shutil.copy2(_lp(src), _lp(os.path.join(STAGE, 'WashingText.exe')))
+    print(f'启动器 exe: {mb(os.path.getsize(src))}')
+
+
+def write_user_guide() -> None:
+    """安装目录根下放一份给最终用户看的说明; 开发用的 README 不进安装包."""
+    path = os.path.join(STAGE, '使用说明.txt')
+    with open(path, 'w', encoding='utf-8-sig', newline='\r\n') as f:
+        f.write(USER_GUIDE.replace('{version}', VERSION))
+    print('使用说明: 使用说明.txt')
+
+
+def drop_dev_artifacts(pydir: str) -> None:
+    """清掉 pip 留下的开发机痕迹: editable 安装会在 dist-info 里记源路径."""
+    sp = os.path.join(pydir, 'Lib', 'site-packages')
+    removed = []
+    for name in os.listdir(sp):
+        if not name.endswith('.dist-info'):
+            continue
+        target = os.path.join(sp, name, 'direct_url.json')
+        if os.path.isfile(target):
+            os.remove(target)
+            removed.append(f'{name}/direct_url.json')
+    print('清理开发机痕迹: ' + (', '.join(removed) if removed else '无'))
+
+
 def copy_app() -> None:
     dst = os.path.join(STAGE, 'app')
     os.makedirs(dst, exist_ok=True)
@@ -192,6 +279,8 @@ def write_pth(pydir: str) -> None:
 
 def main() -> int:
     print(f'项目根: {ROOT}')
+    check_versions()
+
     force = '--force' in sys.argv
     os.makedirs(STAGE, exist_ok=True)
 
@@ -211,12 +300,18 @@ def main() -> int:
         step('安装三方依赖')
         install_deps(pydir)
     else:
-        # 依赖没动时不重建: 661 MB 的复制没必要, 也避免一次性删上万文件
+        # 依赖没动时不重建: 616 MB 的复制没必要, 也避免一次性删上万个文件
         print('\n== 运行时已存在, 跳过(需要重装依赖请加 --force)')
+
+    # 无论是否重建运行时都要清一遍: 之前漏跑会把本机路径留进安装包
+    step('清理开发机痕迹')
+    drop_dev_artifacts(pydir)
 
     step('复制应用代码')
     rmtree(os.path.join(STAGE, 'app'))      # 只重建代码目录, 文件少, 删得干净
     copy_app()
+    copy_launcher_exe()
+    write_user_guide()
 
     step('完成')
     print(f'stage 总大小: {mb(dir_size(STAGE))}')

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""LLM 整句重写算子 —— 基于 DeepSeek 的生成式兜底.
+"""LLM 整句重写算子 —— 基于 DeepSeek / OpenAI / Claude 的生成式兜底.
 
 定位: 规则算子 (split/shift/attrib/connector/voice) 只改句法骨架, 覆盖面有限;
 本算子对整句做"语义不变、句法重构"的重写, 用于补齐规则算子打不动的句子.
+支持的服务商见 PROVIDER_API (deepseek / openai / claude), 模型名可自由手填.
 
 约定:
   apply() 只返回单个字符串 (整句, 含句末标点), 不返回 list —— list 是 split 的约定.
@@ -19,13 +20,23 @@ import random
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 
 from .. import settings as user_settings
 from .base import Operator, SentenceCtx
 
-ENDPOINT = 'https://api.deepseek.com/chat/completions'
+# 三家服务商的接入点与请求风格:
+#   openai 风格 = /chat/completions, Authorization: Bearer
+#   claude 风格 = /v1/messages, x-api-key + anthropic-version, 响应取 content[0].text
+PROVIDER_API: dict[str, tuple[str, str]] = {
+    'deepseek': ('https://api.deepseek.com/chat/completions', 'openai'),
+    'openai': ('https://api.openai.com/v1/chat/completions', 'openai'),
+    'claude': ('https://api.anthropic.com/v1/messages', 'claude'),
+}
+DEFAULT_PROVIDER = 'deepseek'
+
 KEY_ENV = 'WASHING_DEEPSEEK_KEY'
 # 分发场景可用 WASHING_DEEPSEEK_KEY_FILE 指定 key 文件位置
 KEY_FILE = (os.environ.get('WASHING_DEEPSEEK_KEY_FILE')
@@ -72,10 +83,12 @@ class LLMOperator(Operator):
     # 同一句最多真实调用几次 (管线每句会抽样多条候选, 不限制会重复烧 API)
     MAX_CALLS_PER_TEXT = 2
 
-    def __init__(self, enabled: bool = True, model: str = 'deepseek-chat',
+    def __init__(self, enabled: bool = True, provider: str = DEFAULT_PROVIDER,
+                 model: str = 'deepseek-chat',
                  timeout: float = 30.0, max_fail_streak: int = 3,
                  key_file: str = KEY_FILE):
         self.enabled = enabled
+        self.provider = provider if provider in PROVIDER_API else DEFAULT_PROVIDER
         self.model = model
         self.timeout = timeout
         self.max_fail_streak = max(1, int(max_fail_streak))
@@ -107,22 +120,40 @@ class LLMOperator(Operator):
         key = self._get_key()
         if not key:
             return None
-        body = json.dumps({
-            'model': self.model,
-            'messages': [
-                {'role': 'system', 'content': SYSTEM_PROMPT},
-                {'role': 'user', 'content': text},
-            ],
-            'temperature': 0.9,
-            'max_tokens': len(text) * 3 + 100,
-            'stream': False,
-        }, ensure_ascii=False).encode('utf-8')
-        req = urllib.request.Request(
-            ENDPOINT, data=body,
-            headers={'Content-Type': 'application/json',
-                     'Authorization': 'Bearer ' + key})
+        endpoint, style = PROVIDER_API[self.provider]
+        max_tokens = len(text) * 3 + 100
+        if style == 'claude':
+            # Claude 的 messages 接口: system 是顶层字段, max_tokens 必填
+            body = json.dumps({
+                'model': self.model,
+                'system': SYSTEM_PROMPT,
+                'messages': [{'role': 'user', 'content': text}],
+                'temperature': 0.9,
+                'max_tokens': max_tokens,
+                'stream': False,
+            }, ensure_ascii=False).encode('utf-8')
+            headers = {'Content-Type': 'application/json',
+                       'x-api-key': key,
+                       'anthropic-version': '2023-06-01'}
+        else:
+            body = json.dumps({
+                'model': self.model,
+                'messages': [
+                    {'role': 'system', 'content': SYSTEM_PROMPT},
+                    {'role': 'user', 'content': text},
+                ],
+                'temperature': 0.9,
+                'max_tokens': max_tokens,
+                'stream': False,
+            }, ensure_ascii=False).encode('utf-8')
+            headers = {'Content-Type': 'application/json',
+                       'Authorization': 'Bearer ' + key}
+        req = urllib.request.Request(endpoint, data=body, headers=headers)
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode('utf-8'))
+        if style == 'claude':
+            parts = data.get('content') or []
+            return ''.join(p.get('text', '') for p in parts if p.get('type') == 'text')
         return data['choices'][0]['message']['content']
 
     # ---------- 输出清洗与校验 ----------
@@ -225,26 +256,41 @@ class LLMProbeError(Exception):
         self.message = message
 
 
-def probe(key: str, model: str = 'deepseek-chat', timeout: float = 15.0) -> dict:
+def probe(key: str, model: str = 'deepseek-chat', timeout: float = 15.0,
+          provider: str = DEFAULT_PROVIDER) -> dict:
     """发一次最小请求验证 key / 网络 / 模型是否可用.
 
-    成功返回 {latency_ms, reply, model}; 失败抛 LLMProbeError,
+    成功返回 {latency_ms, reply, model, provider}; 失败抛 LLMProbeError,
     原因写成中文 (key 无效 / 余额不足 / 限流 / 连不上), 直接给界面用.
     """
     if not (key or '').strip():
         raise LLMProbeError('no_key', '还没有填写 API Key')
 
-    body = json.dumps({
-        'model': model,
-        'messages': [{'role': 'user', 'content': '只回复两个字：收到'}],
-        'temperature': 0,
-        'max_tokens': 8,
-        'stream': False,
-    }, ensure_ascii=False).encode('utf-8')
-    req = urllib.request.Request(
-        ENDPOINT, data=body,
-        headers={'Content-Type': 'application/json',
-                 'Authorization': 'Bearer ' + key.strip()})
+    provider = provider if provider in PROVIDER_API else DEFAULT_PROVIDER
+    endpoint, style = PROVIDER_API[provider]
+    host = urllib.parse.urlsplit(endpoint).hostname or endpoint
+
+    if style == 'claude':
+        body = json.dumps({
+            'model': model,
+            'messages': [{'role': 'user', 'content': '只回复两个字：收到'}],
+            'max_tokens': 16,
+            'stream': False,
+        }, ensure_ascii=False).encode('utf-8')
+        headers = {'Content-Type': 'application/json',
+                   'x-api-key': key.strip(),
+                   'anthropic-version': '2023-06-01'}
+    else:
+        body = json.dumps({
+            'model': model,
+            'messages': [{'role': 'user', 'content': '只回复两个字：收到'}],
+            'temperature': 0,
+            'max_tokens': 16,
+            'stream': False,
+        }, ensure_ascii=False).encode('utf-8')
+        headers = {'Content-Type': 'application/json',
+                   'Authorization': 'Bearer ' + key.strip()}
+    req = urllib.request.Request(endpoint, data=body, headers=headers)
 
     started = time.time()
     try:
@@ -254,7 +300,8 @@ def probe(key: str, model: str = 'deepseek-chat', timeout: float = 15.0) -> dict
         detail = ''
         try:
             payload = json.loads(exc.read().decode('utf-8'))
-            detail = ((payload or {}).get('error') or {}).get('message') or ''
+            err = (payload or {}).get('error') or (payload or {})
+            detail = err.get('message') or ''
         except Exception:  # noqa: BLE001 - 错误体不是 JSON 就只报状态码
             detail = ''
         hint = {
@@ -262,20 +309,26 @@ def probe(key: str, model: str = 'deepseek-chat', timeout: float = 15.0) -> dict
             401: 'API Key 无效或已失效',
             402: '账户余额不足',
             403: '该 Key 没有调用权限',
+            404: '模型不存在（检查模型名拼写）',
             429: '请求过于频繁，稍后再试',
-            500: 'DeepSeek 服务端异常，稍后再试',
-            503: 'DeepSeek 服务繁忙，稍后再试',
-        }.get(exc.code, 'DeepSeek 返回错误')
+            500: '服务端异常，稍后再试',
+            503: '服务繁忙，稍后再试',
+        }.get(exc.code, '服务方返回错误')
         suffix = f'：{detail}' if detail else ''
         raise LLMProbeError(f'http_{exc.code}', f'{hint}（HTTP {exc.code}）{suffix}')
     except TimeoutError:
         raise LLMProbeError('timeout', f'请求超时（{timeout:.0f} 秒无响应）')
     except urllib.error.URLError as exc:
-        raise LLMProbeError('network', f'连不上 api.deepseek.com：{exc.reason}')
+        raise LLMProbeError('network', f'连不上 {host}：{exc.reason}')
 
     latency_ms = int((time.time() - started) * 1000)
     try:
-        reply = data['choices'][0]['message']['content']
+        if style == 'claude':
+            parts = data.get('content') or []
+            reply = ''.join(p.get('text', '') for p in parts if p.get('type') == 'text')
+        else:
+            reply = data['choices'][0]['message']['content']
     except (KeyError, IndexError, TypeError):
-        raise LLMProbeError('bad_response', 'DeepSeek 返回了无法解析的内容')
-    return {'latency_ms': latency_ms, 'reply': str(reply).strip()[:48], 'model': model}
+        raise LLMProbeError('bad_response', '服务方返回了无法解析的内容')
+    return {'latency_ms': latency_ms, 'reply': str(reply).strip()[:48],
+            'model': model, 'provider': provider}

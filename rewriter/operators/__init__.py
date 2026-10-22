@@ -49,6 +49,7 @@ def build_operators(cfg: dict, whitelist: list[str] | None = None) -> dict[str, 
     if llm_cfg.get('enabled') and 'llm' not in disabled:
         ops['llm'] = LLMOperator(
             enabled=True,
+            provider=llm_cfg.get('provider', 'deepseek'),
             model=llm_cfg.get('model', 'deepseek-chat'),
             timeout=llm_cfg.get('timeout', 30),
             max_fail_streak=llm_cfg.get('max_fail_streak', 3))

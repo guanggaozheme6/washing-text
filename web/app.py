@@ -26,7 +26,7 @@ HOST = os.environ.get('WASHING_HOST', '127.0.0.1')
 PORT = int(os.environ.get('WASHING_PORT', '8777'))
 # 启动器靠它判断端口上跑的是不是同一版服务, 升版本时两处一起改
 APP_ID = 'washing-text'
-APP_VERSION = '1.0.1'
+APP_VERSION = '1.0.2'
 MAX_TEXT_CHARS = 100000
 MAX_BODY_BYTES = 2 * 1024 * 1024
 
@@ -311,14 +311,20 @@ def _settings_payload() -> dict:
     cfg = user_settings.load()
     llm = cfg['llm']
     key = user_settings.get_api_key()
+    provider = llm.get('provider') if user_settings.allowed_provider(llm.get('provider', '')) \
+        else 'deepseek'
     return {
         'enabled': bool(llm.get('enabled')),
-        'model': llm.get('model') or user_settings.ALLOWED_MODELS[0],
+        'provider': provider,
+        'model': llm.get('model') or user_settings.default_model(provider),
         'timeout': llm.get('timeout') or 30,
         'has_key': bool(key),
         'key_masked': user_settings.mask_key(key),
         'key_source': user_settings.key_source(),   # env / settings / none
-        'models': list(user_settings.ALLOWED_MODELS),
+        'providers': [
+            {'id': pid, 'label': info['label'], 'models': info['models']}
+            for pid, info in user_settings.PROVIDERS.items()
+        ],
         'settings_path': user_settings.SETTINGS_FILE,
         'auto_stop': bool(cfg['server'].get('auto_stop', True)),
     }
@@ -341,10 +347,21 @@ def update_settings():
     if 'auto_stop' in body:
         server_patch['auto_stop'] = bool(body['auto_stop'])
 
+    if 'provider' in body:
+        provider = str(body.get('provider') or '').strip()
+        if not user_settings.allowed_provider(provider):
+            raise ServiceError('bad_provider',
+                               f'不支持的服务商：{provider or "(空)"}，'
+                               f'可选 {"/".join(user_settings.PROVIDERS)}')
+        patch['provider'] = provider
+        # 换服务商时把模型带回该家的默认值, 避免拿着 A 家的模型名去敲 B 家的 API
+        if 'model' not in body:
+            patch['model'] = user_settings.default_model(provider)
+
     if 'model' in body:
         model = str(body.get('model') or '').strip()
-        if model not in user_settings.ALLOWED_MODELS:
-            raise ServiceError('bad_model', f'不支持的模型：{model or "(空)"}')
+        if not model or len(model) > 80:
+            raise ServiceError('bad_model', '模型名不能为空（80 字符以内）')
         patch['model'] = model
 
     if 'timeout' in body:
@@ -382,13 +399,15 @@ def test_settings():
     body = request.get_json(silent=True) or {}
     key = str(body.get('api_key') or '').strip() or user_settings.get_api_key()
     model = str(body.get('model') or '').strip() or _settings_payload()['model']
-    if model not in user_settings.ALLOWED_MODELS:
-        raise ServiceError('bad_model', f'不支持的模型：{model}')
+    provider = str(body.get('provider') or '').strip() or 'deepseek'
+    if not user_settings.allowed_provider(provider):
+        raise ServiceError('bad_provider', f'不支持的服务商：{provider}')
     try:
-        result = probe(key, model=model, timeout=20.0)
+        result = probe(key, model=model, timeout=20.0, provider=provider)
     except LLMProbeError as exc:
         raise ServiceError(exc.code, exc.message)
-    log.info('LLM 连通性测试通过 (%sms)', result['latency_ms'])
+    log.info('LLM 连通性测试通过 (%sms, %s/%s)', result['latency_ms'],
+             result['provider'], result['model'])
     return jsonify({'ok': True, **result})
 
 

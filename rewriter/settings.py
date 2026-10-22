@@ -27,6 +27,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'llm': {
         'enabled': True,
         'api_key': '',
+        'provider': 'deepseek',   # deepseek | openai | claude
         'model': 'deepseek-chat',
         'timeout': 30,
     },
@@ -36,7 +37,31 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
 }
 
-ALLOWED_MODELS = ('deepseek-chat', 'deepseek-reasoner')
+# 支持的服务商. 模型名不在白名单里硬卡 ——
+# 各家中转/新模型层出不穷, 界面上给建议值(datalist), 允许手填.
+PROVIDERS: dict[str, dict[str, Any]] = {
+    'deepseek': {
+        'label': 'DeepSeek',
+        'models': ['deepseek-chat', 'deepseek-reasoner'],
+    },
+    'openai': {
+        'label': 'OpenAI',
+        'models': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5-mini'],
+    },
+    'claude': {
+        'label': 'Anthropic Claude',
+        'models': ['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-1'],
+    },
+}
+
+
+def allowed_provider(name: str) -> bool:
+    return name in PROVIDERS
+
+
+def default_model(provider: str) -> str:
+    info = PROVIDERS.get(provider) or PROVIDERS['deepseek']
+    return info['models'][0]
 
 
 def _settings_dir() -> str:

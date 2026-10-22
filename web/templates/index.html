@@ -217,10 +217,16 @@
 
       <div class="modal-body">
         <div class="field">
+          <label class="field-label" for="setProvider">服务商</label>
+          <select id="setProvider" class="text-input"></select>
+          <p class="field-hint" id="providerHint">Key 与模型跟着服务商走，切换后记得保存</p>
+        </div>
+
+        <div class="field">
           <label class="field-label" for="setApiKey">API Key</label>
           <div class="key-row">
             <input type="password" id="setApiKey" class="text-input" autocomplete="off"
-                   spellcheck="false" placeholder="sk-…（粘贴 DeepSeek 的 Key）">
+                   spellcheck="false" placeholder="粘贴对应服务商的 Key">
             <button class="btn btn-ghost btn-sm" id="btnToggleKey" type="button">显示</button>
           </div>
           <p class="field-hint" id="keyHint">正在读取…</p>
@@ -229,7 +235,9 @@
         <div class="field-row">
           <div class="field">
             <label class="field-label" for="setModel">模型</label>
-            <select id="setModel" class="text-input"></select>
+            <input type="text" id="setModel" class="text-input" list="modelOptions"
+                   autocomplete="off" spellcheck="false" placeholder="选择或直接填模型名">
+            <datalist id="modelOptions"></datalist>
           </div>
           <div class="field field-narrow">
             <label class="field-label" for="setTimeout">超时（秒）</label>

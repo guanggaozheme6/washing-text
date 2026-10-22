@@ -31,8 +31,9 @@ generative:                # 可选兜底, 默认关闭
   enabled: false
   backend: simbert         # simbert | llm | backtranslate
 
-llm:                       # DeepSeek 整句重写算子
+llm:                       # 大模型整句重写算子 (deepseek / openai / claude)
   enabled: true            # 默认开启: 无 key 时自动熔断降级, 不影响纯规则流程
+  provider: deepseek       # deepseek | openai | claude (界面「API 设置」也能改)
   model: deepseek-chat
   timeout: 30
   max_fail_streak: 3       # 连续失败次数达到后本进程内熔断
